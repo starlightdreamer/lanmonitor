@@ -23,7 +23,7 @@
 # todo: bug involving client_list.  When a disconnect happens, an error with the list creates a duplicate list item
 #	for a connected device.
 
-import argparse, configparser, subprocess, re, sqlite3, time, datetime
+import argparse, configparser, subprocess, re, sqlite3, time, datetime, sys, requests
 from informer import inform
 
 
@@ -43,8 +43,8 @@ def fetch_user_id():
 	ipconfig_output = subprocess.run(["ipconfig", "/all"], universal_newlines=True, stdout=subprocess.PIPE).stdout
 	ipconfig_output = ipconfig_output.splitlines()
 
-	mac_pattern = re.compile('\w\w-\w\w-\w\w-\w\w-\w\w-\w\w')  # re.compile saves a regular expression pattern
-	ip_pattern = re.compile('\d+\.\d+\.\d+\.\d+')
+	mac_pattern = re.compile(r'\w\w-\w\w-\w\w-\w\w-\w\w-\w\w')  # re.compile saves a regular expression pattern
+	ip_pattern = re.compile(r'\d+\.\d+\.\d+\.\d+')
 
 	def mac_find():
 		for line in ipconfig_output:
@@ -79,7 +79,7 @@ def ping_all(x, timeout=350):
 
 	start_time = datetime.datetime.now().time().strftime('%H:%M:%S')
 
-	ip_range_pattern = re.compile('\d+\.\d+\.\d+\.')  # compile regex pattern for IP string
+	ip_range_pattern = re.compile(r'\d+\.\d+\.\d+\.')  # compile regex pattern for IP string
 	match = ip_range_pattern.search(x)
 	ip_list = []   		# list of local client IP connections found
 	unused_count = 0    # this will count the number of unused IPs in a row. Will break pinging if enough failed pings.
@@ -133,7 +133,7 @@ def get_macs(client_list):
 	client_list -- list of local IPs connected to LAN
 	"""
 
-	mac_pattern = re.compile('\w\w-\w\w-\w\w-\w\w-\w\w-\w\w')  # regex pattern for finding mac addresses
+	mac_pattern = re.compile(r'\w\w-\w\w-\w\w-\w\w-\w\w-\w\w')  # regex pattern for finding mac addresses
 
 	arp_output = subprocess.run(['arp', '-a'], universal_newlines=True, stdout=subprocess.PIPE).stdout
 	arp_output = arp_output.splitlines()
@@ -170,8 +170,7 @@ def get_client_names(client_list):
 				client['name'] = c.fetchone()[0]
 				# print(client['mac'] + " had a stored name on file: " + client['name'])
 		except sqlite3.IntegrityError as e:
-			print("FATAL ERROR")
-			None
+			print("Error loading client names: ", e)
 
 
 	for client in client_list:
@@ -202,7 +201,7 @@ def save_client_name(client):
 	try:
 		c.execute('UPDATE clients SET name = :name WHERE mac = :mac', client)
 	except sqlite3.IntegrityError as e:
-		None
+		print("saving name error: ", e)
 
 	conn.commit()  	# save changes
 	conn.close()	# close sql connection to file"""
@@ -214,7 +213,6 @@ def get_mac_manufacturer_api(client):
 
 	client -- dict containing client values
 	"""
-	import requests
 
 	time.sleep(1)
 
@@ -226,10 +224,6 @@ def get_mac_manufacturer_api(client):
 			client['name'] = response.text
 	except requests.exceptions.RequestException:
 		print("API FAILED")
-		return
-
-	pass
-
 
 
 def add_clients_to_db(clients_list):
@@ -267,7 +261,7 @@ def menu(client_list):
 		"""
 
 		print("\nThe connected client list on your LAN: \n")
-		for i, client in enumerate(client_list):
+		for client in client_list:
 			print("Device " + str(client['id']) + ": " + client['ip'] + " " + client['mac'] + " " + client['name'])
 
 		print()
@@ -279,36 +273,30 @@ def menu(client_list):
 
 		if user_input == 'n':
 			return False
-		else:
-			selected_client_id = int(user_input)
-			matched_id = False
 
-			for c in client_list:
-				if c['id'] == selected_client_id:
-					selected_client = c
-					matched_id = True
-					break
+		matched_id = False
 
-			if matched_id == False:
-				print("invalid input")
-				return True
+		for c in client_list:
+			if c['id'] == int(user_input):
+				selected_client = c
+				matched_id = True
+				break
 
-			input_name = input("Enter new name for device #" \
-			 + user_input + " or enter 'api' to download a name: ")
-
-			if input_name == 'api':
-				get_mac_manufacturer_api(selected_client)
-			else:
-				selected_client['name'] = input_name
-
-			print(selected_client['name'] + " is the new name of that device.")
-			save_client_name(selected_client)
+		if not matched_id:
+			print("invalid input")
 			return True
-		
-			if matched_id == False:
-				print("Invalid input.")
-				return True
 
+		input_name = input("Enter new name for device #" \
+			+ user_input + " or enter 'api' to download a name: ")
+
+		if input_name == 'api':
+			get_mac_manufacturer_api(selected_client)
+		else:
+			selected_client['name'] = input_name
+
+		print(selected_client['name'] + " is the new name of that device.")
+		save_client_name(selected_client)
+		return True
 
 	while(prompt()):
 		pass
@@ -338,8 +326,6 @@ def connections():
 	return user_id, client_list
 
 
-
-
 def get_connections_info(client_list):
 	"""to be called when a client(s) has been added to the LAN current connections list.
 	Updates MAC and device name info, if necessary.
@@ -355,7 +341,6 @@ def get_connections_info(client_list):
 		if client["name"] == 'unknown':
 			get_mac_manufacturer_api(client)
 			save_client_name(client)
-
 
 
 def monitor(id, client_list):
@@ -405,8 +390,6 @@ def monitor(id, client_list):
 		time.sleep(5)
 
 
-
-
 def connection_notice(device):
 	global ask_name_change
 	global watched_devices
@@ -418,7 +401,6 @@ def connection_notice(device):
 	for d in watched_devices:
 		if d == device['id']:
 			inform('Watched device named ' + device['name'] + ' connected.', 'Device #' + str(device['id']) + " named " + device['name'] + " connected.")
-
 
 
 def disconnection_notice(device):
@@ -461,7 +443,7 @@ def main():
 	if args.connections:
 		client_list = connections()[1]
 		print("\nThe connected client list on your LAN: \n")
-		for i, client in enumerate(client_list):
+		for client in client_list:
 			print("Device " + str(client['id']) + ": " + client['ip'] + " " + client['mac'] + " " + client['name'])
 
 	else:
@@ -472,9 +454,6 @@ def main():
 		monitor(user_id, client_list)
 
 
-
-
 if __name__ == '__main__':
 	main()
-
 
